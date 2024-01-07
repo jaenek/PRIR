@@ -331,7 +331,7 @@ void box_blur_rgb_mpi(float *& in, float *& out, int w, int h, int c, int r, int
 	}
 	int local_width = w / size;
 
-	printf("size: %d rank: %d, size: %d\n", local_width, rank, size);
+	printf("width: %d, local: %d, rank: %d, size: %d\n", w, local_width, rank, size);
 
 	float *local_in = new float[local_width*h*c];
 	float *local_out = new float[local_width*h*c];
@@ -387,7 +387,7 @@ void fast_gaussian_blur_rgb(float *& in, float *& out, int w, int h, int c, floa
 
 int main(int argc, char * argv[])
 {
-	int rank = 0, size = 1, width, height, channels, isize;
+	int rank = 0, size = 1, width = 6240, height = 4160, channels = 3, isize = 0;
 	unsigned char *image_data;
 	float sigma, *old_image, *new_image;
 	std::chrono::system_clock::time_point start;
@@ -396,10 +396,11 @@ int main(int argc, char * argv[])
 	MPI_Comm_size(MPI_COMM_WORLD, &size);
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
+	sigma = argc > 1 ? std::atof(argv[1]) : 3.;
+
 	if (rank == 0) {
 		if( argc < 2 ) die("Error: Provide blur sigma as an argument.");
 		const char * image_file = "./sander-crombach-6b3r1WAjPBI-unsplash.jpg";
-		sigma = argc > 1 ? std::atof(argv[1]) : 3.;
 
 		// image loading
 		image_data = stbi_load(image_file, &width, &height, &channels, 0);
@@ -424,14 +425,29 @@ int main(int argc, char * argv[])
 
 		// per channel filter
 		start = std::chrono::system_clock::now();
-		puts("starting");
 	}
 
-	MPI_Barrier(MPI_COMM_WORLD);
+	MPI_Request rq;
+	if (rank == 0) {
+		for (int i = 1; i < size; ++i) {
+			MPI_Isend(&width, 1, MPI_INT, i, 0, MPI_COMM_WORLD, &rq);
+			MPI_Isend(&height, 1, MPI_INT, i, 0, MPI_COMM_WORLD, &rq);
+			MPI_Isend(&channels, 1, MPI_INT, i, 0, MPI_COMM_WORLD, &rq);
+		}
+	} else {
+		printf("rank: %d waiting\n", rank);
+		MPI_Irecv(&width, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &rq);
+		MPI_Irecv(&height, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &rq);
+		MPI_Irecv(&channels, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &rq);
+	}
+
+	printf("rank: %d waiting once more\n", rank);
+
+	MPI_Wait(&rq, MPI_STATUS_IGNORE);
+
+	printf("rank: %d starting\n", rank);
 
 	fast_gaussian_blur_rgb(old_image, new_image, width, height, channels, sigma, rank, size, false, true);
-
-	MPI_Barrier(MPI_COMM_WORLD);
 
 	if (rank == 0) {
 		auto end = std::chrono::system_clock::now();
