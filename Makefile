@@ -2,7 +2,11 @@
 all: clean conv
 
 conv:
-	g++ conv.cpp -O3 -o conv -fopenmp -lm
+	mpicxx conv.cpp -O3 -o conv -fopenmp -lm -lmpi
+
+.PHONY: run
+run:
+	mpiexec -n 4 ./conv 10.
 
 .PHONY: clean
 clean:
