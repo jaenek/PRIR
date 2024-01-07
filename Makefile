@@ -2,7 +2,7 @@
 all: clean conv
 
 conv:
-	gcc conv.c -O3 -o conv -fopenmp -lm
+	g++ conv.cpp -O3 -o conv -fopenmp -lm
 
 .PHONY: clean
 clean:
