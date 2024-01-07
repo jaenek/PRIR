@@ -323,33 +323,6 @@ void box_blur_rgb_omp(float *& in, float *& out, int w, int h, int c, int r)
     total_blur_rgb_omp(in, out, w, h, c, r);
 }
 
-void box_blur_rgb_mpi(float *& in, float *& out, int w, int h, int c, int r, int rank, int size, bool omp)
-{
-	if (w % size != 0 && rank == 0) {
-		MPI_Finalize();
-		die("Error: Image cannot be divided by the number of processes.\n");
-	}
-	int local_width = w / size;
-
-	printf("width: %d, local: %d, rank: %d, size: %d\n", w, local_width, rank, size);
-
-	float *local_in = new float[local_width*h*c];
-	float *local_out = new float[local_width*h*c];
-
-	MPI_Scatter(in, local_width * h * c, MPI_FLOAT, local_in, local_width * h * c, MPI_FLOAT, 0, MPI_COMM_WORLD);
-
-	if (!omp) {
-		box_blur_rgb(local_in, local_out, local_width, h, c, r);
-	} else {
-		box_blur_rgb_omp(local_in, local_out, local_width, h, c, r);
-	}
-
-	MPI_Gather(local_out, local_width * h * c, MPI_FLOAT, out, local_width * h * c, MPI_FLOAT, 0, MPI_COMM_WORLD);
-
-    delete[] local_in;
-    delete[] local_out;
-}
-
 //!
 //! \fn void fast_gaussian_blur_rgb(float * in, float * out, int w, int h, int c, float sigma)
 //!
@@ -365,23 +338,19 @@ void box_blur_rgb_mpi(float *& in, float *& out, int w, int h, int c, int r, int
 //! \param[in] c            image channels
 //! \param[in] sigma        gaussian std dev
 //!
-void fast_gaussian_blur_rgb(float *& in, float *& out, int w, int h, int c, float sigma, int rank, int size, bool omp, bool mpi)
+void fast_gaussian_blur_rgb(float *& in, float *& out, int w, int h, int c, float sigma, int rank, int size, bool omp)
 {
     // sigma conversion to box dimensions
     int boxes[3];
     std_to_box(boxes, sigma, 3);
-	if (!omp && !mpi) {
+	if (!omp) {
 		box_blur_rgb(in, out, w, h, c, boxes[0]);
 		box_blur_rgb(out, in, w, h, c, boxes[1]);
 		box_blur_rgb(in, out, w, h, c, boxes[2]);
-	} else if (omp && !mpi) {
+	} else if (omp) {
 		box_blur_rgb_omp(in, out, w, h, c, boxes[0]);
 		box_blur_rgb_omp(out, in, w, h, c, boxes[1]);
 		box_blur_rgb_omp(in, out, w, h, c, boxes[2]);
-	} else {
-		box_blur_rgb_mpi(in, out, w, h, c, boxes[0], rank, size, omp);
-		box_blur_rgb_mpi(out, in, w, h, c, boxes[1], rank, size, omp);
-		box_blur_rgb_mpi(in, out, w, h, c, boxes[2], rank, size, omp);
 	}
 }
 
@@ -427,31 +396,37 @@ int main(int argc, char * argv[])
 		start = std::chrono::system_clock::now();
 	}
 
-	MPI_Request rq;
-	if (rank == 0) {
-		for (int i = 1; i < size; ++i) {
-			MPI_Isend(&width, 1, MPI_INT, i, 0, MPI_COMM_WORLD, &rq);
-			MPI_Isend(&height, 1, MPI_INT, i, 0, MPI_COMM_WORLD, &rq);
-			MPI_Isend(&channels, 1, MPI_INT, i, 0, MPI_COMM_WORLD, &rq);
-		}
-	} else {
-		printf("rank: %d waiting\n", rank);
-		MPI_Irecv(&width, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &rq);
-		MPI_Irecv(&height, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &rq);
-		MPI_Irecv(&channels, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &rq);
+	if (width % size != 0 && rank == 0) {
+		MPI_Finalize();
+		die("Error: Image cannot be divided by the number of processes.\n");
 	}
+	int local_width = width / size;
+	int local_size = local_width * height * channels;
 
-	printf("rank: %d waiting once more\n", rank);
+	printf("width: %d, local: %d, rank: %d, size: %d\n", width, local_width, rank, size);
 
-	MPI_Wait(&rq, MPI_STATUS_IGNORE);
+	float *local_in = new float[local_size];
+	float *local_out = new float[local_size];
 
-	printf("rank: %d starting\n", rank);
+	if(rank == 0) {
+        MPI_Scatter(old_image, local_size, MPI_FLOAT, local_in, local_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    } else {
+        MPI_Scatter(NULL, local_size, MPI_FLOAT, local_in, local_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    }
 
-	fast_gaussian_blur_rgb(old_image, new_image, width, height, channels, sigma, rank, size, false, true);
+	printf("local_in: %f, rank: %d\n", local_in[0], rank);
+
+	fast_gaussian_blur_rgb(local_in, local_out, local_width, height, channels, sigma, rank, size, false);
+
+	printf("JEBAĆ MPI\n");
+
+	MPI_Gather(local_out, width * height * channels, MPI_FLOAT, new_image, local_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+
+    delete[] local_in;
+    delete[] local_out;
 
 	if (rank == 0) {
 		auto end = std::chrono::system_clock::now();
-		puts("ended");
 
 		// stats
 		float elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end-start).count();
