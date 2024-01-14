@@ -6,7 +6,7 @@ conv:
 
 .PHONY: run
 run:
-	mpiexec -n 4 ./conv 10.
+	mpiexec -n 16 --oversubscribe ./conv 10.
 
 .PHONY: clean
 clean:
